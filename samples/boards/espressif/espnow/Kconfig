@@ -6,11 +6,11 @@ menu "ESP-NOW Configuration"
 
 choice ESPNOW_ROLE
 	prompt "Device role"
-	default ESPNOW_ROLE_BOTH
+	default ESPNOW_ROLE_BIDIR
 	help
 	  SENDER:   transmits heartbeat beacons only.
 	  RECEIVER: listens only (no beacon thread).
-	  BOTH:     transmits beacons AND receives — loopback test with two devices.
+	  BIDIR:    transmits beacons AND receives — loopback test with two devices.
 
 config ESPNOW_ROLE_SENDER
 	bool "Sender"
@@ -18,8 +18,8 @@ config ESPNOW_ROLE_SENDER
 config ESPNOW_ROLE_RECEIVER
 	bool "Receiver"
 
-config ESPNOW_ROLE_BOTH
-	bool "Both (send + receive)"
+config ESPNOW_ROLE_BIDIR
+	bool "Bidir (send + receive)"
 
 endchoice
 
@@ -34,8 +34,16 @@ config ESPNOW_BEACON_INTERVAL_S
 	int "Beacon interval (seconds)"
 	range 1 60
 	default 5
-	depends on ESPNOW_ROLE_SENDER || ESPNOW_ROLE_BOTH
+	depends on ESPNOW_ROLE_SENDER || ESPNOW_ROLE_BIDIR
 
 endmenu
+
+config HEAP_MEM_POOL_ADD_SIZE_ESPNOW_SAMPLE
+	int
+	default 28672
+	help
+	  Heap required by the ESP-IDF WiFi blobs for ESP-NOW STA mode
+	  (no scanning, no AP association). Added on top of any subsystem
+	  contributions such as HEAP_MEM_POOL_ADD_SIZE_ESP_WIFI.
 
 source "Kconfig.zephyr"

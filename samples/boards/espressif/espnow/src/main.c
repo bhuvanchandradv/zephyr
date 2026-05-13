@@ -7,7 +7,7 @@
  * Role is selected at build time via Kconfig:
  *   CONFIG_ESPNOW_ROLE_SENDER   — TX only
  *   CONFIG_ESPNOW_ROLE_RECEIVER — RX only
- *   CONFIG_ESPNOW_ROLE_BOTH     — TX + RX (default; loopback test with two boards)
+ *   CONFIG_ESPNOW_ROLE_BIDIR     — TX + RX (default; loopback test with two boards)
  *
  * Both devices must be on the same WiFi channel (CONFIG_ESPNOW_CHANNEL).
  * No AP is required — the channel is fixed via esp_wifi_set_channel().
@@ -38,7 +38,7 @@ static const uint8_t k_bcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0x
 /*
  * RX callback — WiFi task context; no blocking, no heap alloc.
  */
-#if defined(CONFIG_ESPNOW_ROLE_RECEIVER) || defined(CONFIG_ESPNOW_ROLE_BOTH)
+#if defined(CONFIG_ESPNOW_ROLE_RECEIVER) || defined(CONFIG_ESPNOW_ROLE_BIDIR)
 static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
 	const uint8_t *mac = info->src_addr;
@@ -66,9 +66,11 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
 /*
  * TX callback — WiFi task context.
  */
-#if defined(CONFIG_ESPNOW_ROLE_SENDER) || defined(CONFIG_ESPNOW_ROLE_BOTH)
-static void send_cb(const uint8_t *mac, esp_now_send_status_t status)
+#if defined(CONFIG_ESPNOW_ROLE_SENDER) || defined(CONFIG_ESPNOW_ROLE_BIDIR)
+static void send_cb(const esp_now_send_info_t *info, esp_now_send_status_t status)
 {
+	const uint8_t *mac = info->des_addr;
+
 	if (status == ESP_NOW_SEND_SUCCESS) {
 		LOG_INF("TX OK  → %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
 			mac[4], mac[5]);
@@ -120,19 +122,20 @@ static struct k_thread s_beacon_tid;
  */
 int main(void)
 {
-	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 	esp_now_peer_info_t peer = {};
 	esp_err_t rc;
 
-	/* 1. WiFi STA init */
-	rc = esp_wifi_init(&cfg);
-	if (rc != ESP_OK) {
-		LOG_ERR("esp_wifi_init failed: 0x%x", rc);
-		return -EIO;
-	}
+	/* 1. WiFi STA mode + start — driver already called esp_wifi_init(),
+	 *    so we only need to set the mode, start the stack, and fix the
+	 *    channel.  No AP is required for ESP-NOW.
+	 */
 	esp_wifi_set_storage(WIFI_STORAGE_RAM);
 	esp_wifi_set_mode(ESP32_WIFI_MODE_STA);
-	esp_wifi_start();
+	rc = esp_wifi_start();
+	if (rc != ESP_OK) {
+		LOG_ERR("esp_wifi_start failed: 0x%x", rc);
+		return -EIO;
+	}
 
 	/* 2. Lock to configured channel — no AP needed */
 	esp_wifi_set_channel(CONFIG_ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
@@ -144,10 +147,10 @@ int main(void)
 		return -EIO;
 	}
 
-#if defined(CONFIG_ESPNOW_ROLE_RECEIVER) || defined(CONFIG_ESPNOW_ROLE_BOTH)
+#if defined(CONFIG_ESPNOW_ROLE_RECEIVER) || defined(CONFIG_ESPNOW_ROLE_BIDIR)
 	esp_now_register_recv_cb(recv_cb);
 #endif
-#if defined(CONFIG_ESPNOW_ROLE_SENDER) || defined(CONFIG_ESPNOW_ROLE_BOTH)
+#if defined(CONFIG_ESPNOW_ROLE_SENDER) || defined(CONFIG_ESPNOW_ROLE_BIDIR)
 	esp_now_register_send_cb(send_cb);
 #endif
 
@@ -167,12 +170,12 @@ int main(void)
 #elif defined(CONFIG_ESPNOW_ROLE_RECEIVER)
 		"RECEIVER"
 #else
-		"BOTH"
+		"BIDIR"
 #endif
 	);
 
 	/* 5. Start beacon thread (sender / both roles) */
-#if defined(CONFIG_ESPNOW_ROLE_SENDER) || defined(CONFIG_ESPNOW_ROLE_BOTH)
+#if defined(CONFIG_ESPNOW_ROLE_SENDER) || defined(CONFIG_ESPNOW_ROLE_BIDIR)
 	k_thread_create(&s_beacon_tid, s_beacon_stack, K_THREAD_STACK_SIZEOF(s_beacon_stack),
 			beacon_thread, NULL, NULL, NULL, BEACON_PRIORITY, 0, K_NO_WAIT);
 	LOG_INF("Beacon thread started  interval=%ds", CONFIG_ESPNOW_BEACON_INTERVAL_S);

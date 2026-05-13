@@ -13,7 +13,7 @@ lock to the same channel and communicate directly.
 
 The device role is selected at build time:
 
-- **BOTH** (default) — transmits a heartbeat beacon every
+- **BIDIR** (default) — transmits a heartbeat beacon every
   ``CONFIG_ESPNOW_BEACON_INTERVAL_S`` seconds *and* prints all received beacons.
   Flash two boards with this role for a loopback test.
 - **SENDER** — beacon thread only; ignores received frames.
@@ -31,7 +31,7 @@ Requirements
 Building and Running
 ********************
 
-Flash the default **BOTH** role to two boards:
+Flash the default **BIDIR** role to two boards:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/boards/espressif/espnow
@@ -48,17 +48,17 @@ To build as receiver only:
 
 .. code-block:: bash
 
-   west build -b esp32_devkitc/esp32/procpu -- -DCONFIG_ESPNOW_ROLE_RECEIVER=y -DCONFIG_ESPNOW_ROLE_BOTH=n
+   west build -b esp32_devkitc/esp32/procpu -- -DCONFIG_ESPNOW_ROLE_RECEIVER=y
 
 Sample Output
 *************
 
 Sender side::
 
-   [00:00:00.512,000] <inf> espnow_sample: ESP-NOW v1 ready  ch=1  role=BOTH
-   [00:00:00.513,000] <inf> espnow_sample: Beacon thread started  interval=5s
-   [00:00:05.001,000] <inf> espnow_sample: TX beacon seq=0  uptime=5001 ms  mac=24:d7:eb:55:87:8c
-   [00:00:05.002,000] <inf> espnow_sample: TX OK  -> ff:ff:ff:ff:ff:ff
+   [00:00:00.186,000] <inf> espnow_sample: ESP-NOW v2 ready  ch=1  role=BIDIR
+   [00:00:00.186,000] <inf> espnow_sample: Beacon thread started  interval=5s
+   [00:00:00.186,000] <inf> espnow_sample: TX beacon seq=0  uptime=186 ms  mac=24:d7:eb:55:87:8c
+   [00:00:00.188,000] <inf> espnow_sample: TX OK  → ff:ff:ff:ff:ff:ff
 
 Receiver side::
 
