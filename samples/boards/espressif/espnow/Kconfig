@@ -38,12 +38,4 @@ config ESPNOW_BEACON_INTERVAL_S
 
 endmenu
 
-config HEAP_MEM_POOL_ADD_SIZE_ESPNOW_SAMPLE
-	int
-	default 28672
-	help
-	  Heap required by the ESP-IDF WiFi blobs for ESP-NOW STA mode
-	  (no scanning, no AP association). Added on top of any subsystem
-	  contributions such as HEAP_MEM_POOL_ADD_SIZE_ESP_WIFI.
-
 source "Kconfig.zephyr"
