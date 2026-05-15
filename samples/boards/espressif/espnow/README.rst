@@ -25,30 +25,26 @@ sender's MAC address. Total wire size is 14 bytes.
 Requirements
 ************
 
-- Two ESP32 DevKit boards (``esp32_devkitc/esp32/procpu``) connected via USB.
+- Two ESP32 DevKit boards connected via USB.
 - Both boards must use the same ``CONFIG_ESPNOW_CHANNEL`` (default: 1).
 
 Building and Running
 ********************
 
-Flash the default **BIDIR** role to two boards:
+Flash the default **BIDIR** role to two boards (ESP32-S3 shown; substitute
+``esp32c6_devkitc/esp32c6/hpcore`` for an ESP32-C6):
 
 .. zephyr-app-commands::
    :zephyr-app: samples/boards/espressif/espnow
-   :board: esp32_devkitc/esp32/procpu
+   :board: esp32s3_devkitc/esp32s3/procpu
    :goals: build flash
    :compact:
-
-.. note::
-
-   Use a low baud rate when flashing over USB-serial (e.g.
-   ``--esp-baud-rate 115200``) if the flash fails at higher rates.
 
 To build as receiver only:
 
 .. code-block:: bash
 
-   west build -b esp32_devkitc/esp32/procpu -- -DCONFIG_ESPNOW_ROLE_RECEIVER=y
+   west build -b esp32s3_devkitc/esp32s3/procpu -- -DCONFIG_ESPNOW_ROLE_RECEIVER=y
 
 Sample Output
 *************
