@@ -884,7 +884,7 @@ config BUILD_OUTPUT_VERILOG_DATA_WIDTH
 
 config BUILD_OUTPUT_UF2
 	bool "Build a binary in UF2 format"
-	depends on BUILD_OUTPUT_BIN
+	depends on BUILD_OUTPUT_BIN || BUILD_OUTPUT_HEX
 	help
 	  Build a UF2 binary zephyr/zephyr.uf2 in the build directory.
 	  The name of this file can be customized with CONFIG_KERNEL_BIN_NAME.
@@ -902,6 +902,7 @@ config BUILD_OUTPUT_UF2_FAMILY_ID
 	default "0x1c5f21b0" if SOC_SERIES_ESP32
 	default "0x621e937a" if SOC_NRF52833_QIAA
 	default "0xada52840" if SOC_NRF52840_QIAA
+	default "0x11de784a" if SOC_SERIES_BL70X
 	default "0x4fb2d5bd" if SOC_SERIES_IMXRT10XX || SOC_SERIES_IMXRT11XX
 	default "0x2abc77ec" if SOC_SERIES_LPC55XXX
 	default "0xe48bff56" if SOC_SERIES_RP2040

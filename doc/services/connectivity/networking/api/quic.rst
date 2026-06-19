@@ -26,6 +26,9 @@ Key properties relevant to embedded use:
   prevents fast senders from overwhelming constrained receivers.
 * **Loss recovery**: A Probe Timeout (PTO) mechanism retransmits data
   without relying on ICMP or TCP-style ACK clocks.
+* **Path MTU discovery**: Datagram Packetization Layer PMTU Discovery
+  (DPLPMTUD, :rfc:`9000` Section 14.3) probes the path after the handshake
+  and raises the send size only after probes are acknowledged.
 * **Socket Integration**: Uses standard Zephyr socket calls like ``zsock_send``,
   ``zsock_recv``, ``zsock_recvmsg``, ``zsock_sendmsg``, ``zsock_close``
   for data transfer.
@@ -50,92 +53,6 @@ between **Connections** and **Streams**.
   it to create streams.
 * **QUIC Stream Socket**: Represents a lightweight data channel inside the connection.
   This is where the actual application data (``send`` or ``recv``) flows.
-
-
-Public API Reference
-********************
-
-The public API is defined in :zephyr_file:`include/zephyr/net/quic.h`.
-
-Connection Management
----------------------
-
-:c:func:`quic_connection_open`
-
-Creates a new QUIC connection context. This serves as the foundation for all
-subsequent communication.
-
-.. code-block:: c
-
-   int quic_connection_open(const struct net_sockaddr *remote_addr,
-                            const struct net_sockaddr *local_addr);
-
-
-* **Parameters**:
-
-  * ``remote_addr``: The address of the peer.
-
-    * **Client Mode**: Set this to the server's IP and port.
-    * **Server Mode**: Set to ``NULL`` (or unspecified) if binding a listener.
-
-  * ``local_addr``: The local address to bind to.
-
-    * **Client Mode**: Can be ``NULL`` (system will auto-bind).
-    * **Server Mode**: Set this to the local interface and port to listen on.
-
-* **Returns**: A file descriptor (socket ID) representing the connection,
-  or ``< 0`` on error.
-
-:c:func:`quic_connection_close`
-
-Closes the connection and terminates the TLS session. The ``zsock_close`` could
-be used here too.
-
-.. code-block:: c
-
-   int quic_connection_close(int sock);
-
-
-Stream Management
------------------
-
-:c:func:`quic_stream_open`
-
-Creates a new stream within an established connection.
-
-.. code-block:: c
-
-   int quic_stream_open(int connection_sock,
-                        enum quic_stream_initiator initiator,
-                        enum quic_stream_direction direction,
-                        uint8_t priority);
-
-
-* **Parameters**:
-
-  * ``connection_sock``: The socket FD returned by ``quic_connection_open``.
-  * ``initiator``: Who is opening the stream?
-
-    * ``QUIC_STREAM_CLIENT``
-    * ``QUIC_STREAM_SERVER``
-
-  * ``direction``:
-
-    * ``QUIC_STREAM_BIDIRECTIONAL``: Both sides can read/write.
-    * ``QUIC_STREAM_UNIDIRECTIONAL``: Only the initiator can write.
-
-  * ``priority``: Priority level (0-255) for scheduling data.
-
-* **Returns**: A new file descriptor (socket ID) specific to this stream.
-
-:c:func:`quic_stream_close`
-
-Closes a specific stream without closing the underlying connection. The ``zsock_close``
-could be used here too.
-
-.. code-block:: c
-
-   int quic_stream_close(int sock);
 
 
 Application Workflow
@@ -255,7 +172,7 @@ descriptor for a new stream initiated by a peer.
 TLS & Security Configuration
 ****************************
 
-The QUIC transport uses ``mbedTLS`` and PSA APIs for cryptographic operations.
+The QUIC transport uses Mbed TLS and PSA APIs for cryptographic operations.
 Security credentials (certificates, keys) are managed via the
 Zephyr **TLS Credentials** subsystem.
 
@@ -281,7 +198,7 @@ using :c:func:`tls_credential_add`.
    static const char priv_key[] = ...;    /* PEM or DER data */
 
    void setup_credentials(void) {
-       tls_credential_add(MY_SEC_TAG, TLS_CREDENTIAL_SERVER_CERTIFICATE,
+       tls_credential_add(MY_SEC_TAG, TLS_CREDENTIAL_PUBLIC_CERTIFICATE,
                           server_cert, sizeof(server_cert));
        tls_credential_add(MY_SEC_TAG, TLS_CREDENTIAL_PRIVATE_KEY,
                           priv_key, sizeof(priv_key));
@@ -294,6 +211,14 @@ Applying Credentials to QUIC
 You apply credentials to the QUIC socket using :c:func:`zsock_setsockopt` on
 the **connection socket** immediately after creation. The credentials
 must be set before the stream is created.
+
+Peer certificate verification follows the same default policy as Zephyr TLS
+sockets: clients require successful peer verification by default, while servers
+default to not verifying client certificates unless
+``ZSOCK_TLS_PEER_VERIFY`` is explicitly enabled. A client that does not load a
+CA certificate therefore fails the handshake by default; applications that
+deliberately skip server authentication must opt out with
+``ZSOCK_TLS_PEER_VERIFY = MBEDTLS_SSL_VERIFY_NONE``.
 
 .. code-block:: c
 
@@ -325,6 +250,55 @@ Note that the list items must be constants, and they cannot be variables.
    if (ret < 0) {
        LOG_ERR("Failed to set ALPN (%d)", -errno);
    }
+
+
+.. _quic_dplpmtud:
+
+Path MTU Discovery (DPLPMTUD)
+*****************************
+
+Zephyr's QUIC stack performs **Datagram Packetization Layer Path MTU Discovery**
+(DPLPMTUD) as described in :rfc:`9000` Section 14.3. The goal is to find the
+largest UDP payload size that can traverse the path without IP-layer
+fragmentation, then use that size for application data packets.
+
+Behavior
+--------
+
+After the TLS handshake completes, the stack may send **probe datagrams**
+containing a PING frame plus padding. Probes are sized to exercise larger path
+MTUs and are transmitted with **don't fragment** enabled on the underlying UDP
+socket (see :c:macro:`ZSOCK_IP_DONTFRAG` / :c:macro:`ZSOCK_IPV6_DONTFRAG` in
+:ref:`ip_socket_options`). This is handled internally; applications do not need
+to configure the UDP socket used by QUIC.
+
+The stack tracks three related limits:
+
+* **Peer ``max_udp_payload_size`` transport parameter** - upper bound advertised
+  by the remote endpoint during the handshake.
+* **Local ceiling** - derived from the interface or socket MTU minus IP and UDP
+  header overhead.
+* **Validated send size** - the largest probe size confirmed by an ACK. This is
+  what governs how large outgoing QUIC packets may be.
+
+Send sizing starts at the **1200-byte minimum UDP payload** required by QUIC.
+When the validated size is below the local and peer ceilings, the stack
+performs a binary search for a larger working size. A probe ACK raises the
+validated limit; repeated probe loss narrows the search range. Stream frames
+are sized to fit within the current validated limit, so throughput on high-MTU
+paths improves automatically once probing succeeds.
+
+Interaction with loss recovery
+------------------------------
+
+DPLPMTUD probes are ack-eliciting and participate in the same loss-recovery
+machinery as stream data. On Probe Timeout (PTO), **in-flight stream frames are
+retransmitted first**; a DPLPMTUD probe is sent only when there is no stream
+data to retransmit (the same situation where a bare PING probe would be sent).
+
+There is currently no application-facing API to enable, disable, or tune
+DPLPMTUD. Probing begins automatically after handshake completion whenever a
+larger path MTU may be available.
 
 
 Configure Options
@@ -405,12 +379,12 @@ a window smaller than the buffer under-utilises available memory.
      - Initial receive window for unidirectional streams opened by the peer.
        Only relevant when :kconfig:option:`CONFIG_QUIC_MAX_STREAMS_UNI` > 0.
    * - :kconfig:option:`CONFIG_QUIC_INITIAL_MAX_STREAMS_BIDI`
-     - =QUIC_MAX_STREAMS_BIDI
+     - QUIC_MAX_STREAMS_BIDI
      - Maximum number of bidirectional streams the peer may open before
        receiving a ``MAX_STREAMS`` frame.  Defaults to the local build-time
        limit.
    * - :kconfig:option:`CONFIG_QUIC_INITIAL_MAX_STREAMS_UNI`
-     - =QUIC_MAX_STREAMS_UNI
+     - QUIC_MAX_STREAMS_UNI
      - Maximum number of unidirectional streams the peer may open.
    * - :kconfig:option:`CONFIG_QUIC_STREAM_RX_WINDOW_UPDATE_THRESHOLD`
      - 25
@@ -442,7 +416,9 @@ breakdown of how these interact.
    * - :kconfig:option:`CONFIG_QUIC_TX_BUFFER_SIZE`
      - 1500
      - Output packet assembly buffer per endpoint.  Must be at least the
-       MTU (minimum 1280 for IPv6 compliance, maximum 1500).
+       network MTU (minimum 1280 for IPv6 compliance, maximum 1500).
+       DPLPMTUD may limit the **validated** UDP payload below this value until
+       a larger path MTU is confirmed; see :ref:`quic_dplpmtud`.
    * - :kconfig:option:`CONFIG_QUIC_CRYPTO_RX_BUFFER_SIZE`
      - 4096
      - Shared CRYPTO frame reassembly buffer per endpoint, used during the
@@ -468,7 +444,7 @@ breakdown of how these interact.
        Size to at least the bandwidth-delay product:
        ``throughput_bytes_per_ms × rtt_ms``.
    * - :kconfig:option:`CONFIG_QUIC_STREAM_RX_BUFFER_SIZE`
-     - =QUIC_STREAM_TX_BUFFER_SIZE
+     - QUIC_STREAM_TX_BUFFER_SIZE
      - Per-stream receive buffer.  Defaults to the TX buffer size, which
        is optimal for symmetric request/response patterns.  Can be
        reduced independently for asymmetric workloads (e.g. download-only
@@ -549,11 +525,11 @@ Service Thread Options
    * - :kconfig:option:`CONFIG_QUIC_SERVICE_STACK_SIZE`
      - 4096
      - Stack size in bytes for the QUIC service thread.  4096 bytes is the
-       default and is sufficient for mbedTLS handshake operations.  Reduce
+       default and is sufficient for Mbed TLS handshake operations.  Reduce
        only if RAM is extremely constrained and profiling confirms the stack
        headroom is not needed.
    * - :kconfig:option:`CONFIG_QUIC_PKT_COUNT`
-     - =QUIC_MAX_ENDPOINTS
+     - QUIC_MAX_ENDPOINTS
      - Number of simultaneous pending packet receive operations.  Defaults
        to the number of endpoints so that one packet per endpoint can be
        in flight concurrently.  Increase (e.g. 2× endpoints) for
@@ -590,7 +566,7 @@ parameters.  All sizes are in bytes unless noted.
      - ``QUIC_MAX_CONTEXTS × QUIC_SENT_PKT_HISTORY_SIZE × 24``
    * - TLS transcript buffers
      - ``QUIC_MAX_CONTEXTS × QUIC_TLS_TRANSCRIPT_BUF_LEN``
-   * - TLS context (mbedTLS)
+   * - TLS context (Mbed TLS)
      - ~8192 × ``QUIC_MAX_CONTEXTS`` (estimated; depends on ciphersuites)
    * - Connection state
      - ~512 × ``QUIC_MAX_CONTEXTS``
@@ -616,7 +592,7 @@ parameters.  All sizes are in bytes unless noted.
    ─────────────────────────────────────────────
    Approximate total                   ≈ 35 992 B (~35 KiB)
 
-The dominant cost at low stream counts is the mbedTLS context per connection.
+The dominant cost at low stream counts is the Mbed TLS context per connection.
 At higher stream counts, the stream TX/RX buffers become dominant.
 
 
